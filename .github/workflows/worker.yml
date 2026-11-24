@@ -31,13 +31,30 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      # Until the two secrets are set this job does nothing and stays green (a failing schedule would e-mail the owner every run).
+      - name: Check that the secrets are set
+        id: cfg
+        env:
+          URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The repository secrets are not set yet - nothing to do."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: ${{ steps.cfg.outputs.ready == 'true' }}
       - uses: actions/setup-node@v4
+        if: ${{ steps.cfg.outputs.ready == 'true' }}
         with:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
+        if: ${{ steps.cfg.outputs.ready == 'true' }}
       - name: Replay data (monthly files, then hours of 1-minute candles)
+        if: ${{ steps.cfg.outputs.ready == 'true' }}
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -49,7 +66,7 @@ jobs:
           node dist/fill-months.mjs "${args[@]}" || echo "::warning::months step failed - continuing with the hours"
           node dist/fill-hours.mjs "${args[@]}"
       - name: Tick data
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.cfg.outputs.ready == 'true' }}
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
