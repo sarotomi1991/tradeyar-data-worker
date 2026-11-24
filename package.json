@@ -1,0 +1,9 @@
+{
+  "name": "tradeyar-data-worker",
+  "private": true,
+  "type": "module",
+  "description": "Fetches market data hours and stores them in the TradeYar database. Built from a private repository; do not edit by hand.",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.104.1"
+  }
+}

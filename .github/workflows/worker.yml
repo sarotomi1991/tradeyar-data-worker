@@ -1,0 +1,61 @@
+# The data worker. Public repository: standard runners are free here, so it can try often and many times.
+# Runs every 10 minutes (it scans for missing data and exits quickly when there is none) and whenever the app starts it
+# right after a trade is imported (mode "queue"). Only schedule / workflow_dispatch triggers: secrets are never exposed to forks.
+name: Data worker
+run-name: ${{ inputs.mode == 'queue' && 'Worker queue (automatic)' || 'Data worker' }}
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'queue = started by the app after an import; sweep = a normal pass'
+        type: choice
+        options: [sweep, queue]
+        default: sweep
+      dry:
+        description: 'Dry run: only print what is missing, store nothing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-worker
+  cancel-in-progress: false
+
+jobs:
+  work:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Replay data (monthly files, then hours of 1-minute candles)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DRY: ${{ inputs.dry && '1' || '0' }}
+        run: |
+          set -uo pipefail
+          args=(--budget-min 8)
+          [ "$DRY" = "1" ] && args+=(--dry)
+          node dist/fill-months.mjs "${args[@]}" || echo "::warning::months step failed - continuing with the hours"
+          node dist/fill-hours.mjs "${args[@]}"
+      - name: Tick data
+        if: ${{ !cancelled() }}
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DRY: ${{ inputs.dry && '1' || '0' }}
+        run: |
+          set -uo pipefail
+          args=(--budget-min 4)
+          [ "$DRY" = "1" ] && args+=(--dry)
+          node dist/fill-ticks.mjs "${args[@]}"
