@@ -65,6 +65,17 @@ jobs:
           [ "$DRY" = "1" ] && args+=(--dry)
           node dist/fill-months.mjs "${args[@]}" || echo "::warning::months step failed - continuing with the hours"
           node dist/fill-hours.mjs "${args[@]}"
+      - name: Early copies of recent hours (published, not final yet)
+        if: ${{ !cancelled() && steps.cfg.outputs.ready == 'true' }}
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DRY: ${{ inputs.dry && '1' || '0' }}
+        run: |
+          set -uo pipefail
+          args=(--budget-min 5)
+          [ "$DRY" = "1" ] && args+=(--dry)
+          node dist/fill-provisional.mjs "${args[@]}"
       - name: Tick data
         if: ${{ !cancelled() && steps.cfg.outputs.ready == 'true' }}
         env:
