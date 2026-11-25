@@ -2,7 +2,7 @@
 # Runs every 10 minutes (it scans for missing data and exits quickly when there is none) and whenever the app starts it
 # right after a trade is imported (mode "queue"). Only schedule / workflow_dispatch triggers: secrets are never exposed to forks.
 name: Data worker
-run-name: ${{ inputs.mode == 'queue' && 'Worker queue (automatic)' || 'Data worker' }}
+run-name: ${{ inputs.mode == 'queue' && 'Worker queue (automatic)' || inputs.mode == 'retry' && 'Worker retry' || 'Data worker' }}
 
 on:
   schedule:
@@ -10,10 +10,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'queue = started by the app after an import; sweep = a normal pass'
+        description: 'queue = started by the app after an import; retry = this worker trying again after something could not be fetched; sweep = a normal pass'
         type: choice
-        options: [sweep, queue]
+        options: [sweep, queue, retry]
         default: sweep
+      attempt:
+        description: 'Retry counter (set by the worker itself)'
+        type: string
+        default: '0'
       dry:
         description: 'Dry run: only print what is missing, store nothing'
         type: boolean
@@ -21,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  actions: write   # only to start its own next try (see the last step)
 
 concurrency:
   group: data-worker
@@ -63,8 +68,8 @@ jobs:
           set -uo pipefail
           args=(--budget-min 8)
           [ "$DRY" = "1" ] && args+=(--dry)
-          node dist/fill-months.mjs "${args[@]}" || echo "::warning::months step failed - continuing with the hours"
-          node dist/fill-hours.mjs "${args[@]}"
+          node dist/fill-months.mjs "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/fill.log" || echo "::warning::months step failed - continuing with the hours"
+          node dist/fill-hours.mjs "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/fill.log"
       - name: Early copies of recent hours (published, not final yet)
         if: ${{ !cancelled() && steps.cfg.outputs.ready == 'true' }}
         env:
@@ -75,7 +80,7 @@ jobs:
           set -uo pipefail
           args=(--budget-min 5)
           [ "$DRY" = "1" ] && args+=(--dry)
-          node dist/fill-provisional.mjs "${args[@]}"
+          node dist/fill-provisional.mjs "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/fill.log"
       - name: Tick data
         if: ${{ !cancelled() && steps.cfg.outputs.ready == 'true' }}
         env:
@@ -86,4 +91,24 @@ jobs:
           set -uo pipefail
           args=(--budget-min 4)
           [ "$DRY" = "1" ] && args+=(--dry)
-          node dist/fill-ticks.mjs "${args[@]}"
+          node dist/fill-ticks.mjs "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/fill.log"
+      # The free source drops requests at random. When something could not be fetched this time, start one more try a
+      # few minutes later (at most 12 tries in a row, then the next trade, page visit or schedule starts a fresh chain).
+      - name: Try again soon if something could not be fetched
+        if: ${{ !cancelled() && steps.cfg.outputs.ready == 'true' && !inputs.dry }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTEMPT: ${{ inputs.attempt || '0' }}
+        run: |
+          if grep -qE "could not be fetched this time|Stopped on the time budget" "$RUNNER_TEMP/fill.log" 2>/dev/null; then
+            n=$((ATTEMPT + 1))
+            if [ "$n" -le 12 ]; then
+              echo "Something is still missing: next try (number $n) in about 2 minutes."
+              sleep 120
+              gh workflow run worker.yml --repo "$GITHUB_REPOSITORY" -f mode=retry -f attempt="$n" -f dry=false
+            else
+              echo "Twelve tries in a row; the next trade, page visit or schedule starts a new chain."
+            fi
+          else
+            echo "Nothing left to fetch."
+          fi
