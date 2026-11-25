@@ -1,0 +1,30 @@
+# Read-only: is one hour of ticks stored and accepted by the app's own read? Started by hand; inputs are market data only.
+name: Check one tick hour
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'Symbol, for example EURUSD'
+        required: true
+      from_sec:
+        description: 'Unix seconds inside the hour'
+        required: true
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SYMBOL: ${{ inputs.symbol }}
+          FROM_SEC: ${{ inputs.from_sec }}
+        run: node dist/check-tick-hour.mjs
